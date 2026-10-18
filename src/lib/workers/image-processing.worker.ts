@@ -78,10 +78,25 @@ export function createImageProcessingWorker(prisma?: PrismaClient) {
   worker.on('failed', async (job, err) => {
     if (job) {
       await runWithJobContext(job, async () => {
-        if (job.attemptsMade >= (job.opts.attempts ?? 5)) {
+        const maxAttempts = job.opts.attempts ?? 5;
+        const exhausted = job.attemptsMade >= maxAttempts;
+        logger.error(
+          {
+            queue: QUEUE_NAMES.imageProcessing,
+            jobId: String(job.id),
+            attemptsMade: job.attemptsMade,
+            maxAttempts,
+            exhausted,
+            err: err,
+          },
+          'image processing job failed'
+        );
+        if (exhausted) {
           await moveToDeadLetter(QUEUE_NAMES.imageProcessing, String(job.id), job.data, err.message);
         }
       });
+    } else {
+      logger.error({ err }, 'image processing job failed');
     }
   });
 

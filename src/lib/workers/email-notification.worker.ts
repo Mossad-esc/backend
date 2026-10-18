@@ -2,7 +2,7 @@ import { Job, Worker } from 'bullmq';
 import { config } from '../../config/env';
 import { logger } from '../../utils/logger';
 import { EmailNotification, renderEmail } from '../../domains/notifications/email';
-import { emailNotificationRedis } from '../queue';
+import { emailNotificationRedis, QUEUE_NAMES } from '../queue';
 import { PrismaClient } from '@prisma/client';
 import { withWorkerContext, runWithJobContext } from './middleware';
 
@@ -51,7 +51,19 @@ export const emailNotificationWorker = new Worker<EmailNotification>(
 emailNotificationWorker.on('failed', (job, error) => {
   if (job) {
     runWithJobContext(job, () => {
-      logger.error({ jobId: job?.id, err: error }, 'Email job failed');
+      const maxAttempts = job.opts.attempts ?? 5;
+      const exhausted = job.attemptsMade >= maxAttempts;
+      logger.error(
+        {
+          queue: QUEUE_NAMES.emailNotifications,
+          jobId: String(job.id),
+          attemptsMade: job.attemptsMade,
+          maxAttempts,
+          exhausted,
+          err: error,
+        },
+        'Email job failed'
+      );
     });
   } else {
     logger.error({ err: error }, 'Email job failed');

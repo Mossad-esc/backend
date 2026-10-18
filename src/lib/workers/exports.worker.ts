@@ -23,10 +23,25 @@ export function createExportsWorker() {
   worker.on('failed', async (job, err) => {
     if (job) {
       await runWithJobContext(job, async () => {
-        if (job.attemptsMade >= (job.opts.attempts ?? 5)) {
+        const maxAttempts = job.opts.attempts ?? 5;
+        const exhausted = job.attemptsMade >= maxAttempts;
+        logger.error(
+          {
+            queue: QUEUE_NAMES.exports,
+            jobId: String(job.id),
+            attemptsMade: job.attemptsMade,
+            maxAttempts,
+            exhausted,
+            err: err,
+          },
+          'exports job failed'
+        );
+        if (exhausted) {
           await moveToDeadLetter(QUEUE_NAMES.exports, String(job.id), job.data, err.message);
         }
       });
+    } else {
+      logger.error({ err }, 'exports job failed');
     }
   });
 

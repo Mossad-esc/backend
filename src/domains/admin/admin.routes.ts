@@ -7,6 +7,7 @@ import { formatSuccess, formatError } from '../../types/response';
 import { requireAdmin } from '../../middleware/rbac';
 import { AppError, UnauthorizedError } from '../../utils/errors';
 import cache, { getStats, resetStats } from '../../lib/cache/index';
+import { getFailedJobs } from '../../lib/queue';
 import { CacheWarmer } from '../../lib/cache/cache-warming';
 
 export const registerAdminRoutes = (app: FastifyInstance, prisma: PrismaClient): void => {
@@ -431,6 +432,40 @@ export const registerAdminRoutes = (app: FastifyInstance, prisma: PrismaClient):
 
         resetStats();
         reply.send(formatSuccess({ message: 'Cache statistics reset successfully' }));
+      } catch (error) {
+        if (error instanceof UnauthorizedError) {
+          reply.code(403).send(formatError(error.message, error.code));
+        } else if (error instanceof AppError) {
+          reply.code(error.statusCode).send(formatError(error.message, error.code));
+        } else {
+          throw error;
+        }
+      }
+    }
+  );
+
+  // GET /api/v1/admin/jobs/failed - list failed jobs across all BullMQ queues
+  app.get(
+    '/api/v1/admin/jobs/failed',
+    {
+      preHandler: requireAdmin,
+      schema: {
+        response: {
+          200: { type: 'null', description: 'Failed jobs across all queues' },
+          401: { type: 'null', description: 'Unauthorized' },
+          403: { type: 'null', description: 'Admin only' },
+        },
+      },
+    },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      try {
+        const user = request.user;
+        if (!user) throw new Error('User not found');
+
+        const failedJobs = await getFailedJobs();
+        reply.send(
+          formatSuccess({ failedJobs, count: failedJobs.length })
+        );
       } catch (error) {
         if (error instanceof UnauthorizedError) {
           reply.code(403).send(formatError(error.message, error.code));

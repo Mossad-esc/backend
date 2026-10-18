@@ -19,7 +19,7 @@
  * BullMQ opens connections on first use, so importing this module in tests
  * without Redis is safe.
  */
-import { Queue, QueueEvents, type ConnectionOptions, type JobsOptions } from 'bullmq';
+import { Job, Queue, QueueEvents, type ConnectionOptions, type JobsOptions } from 'bullmq';
 import IORedis, { type Redis as RedisClient } from 'ioredis';
 import { config } from '../config/env';
 import { logger } from '../utils/logger';
@@ -122,29 +122,63 @@ export const emailNotificationQueue = new Queue(QUEUE_NAMES.emailNotifications, 
   connection: emailNotificationRedis as unknown as ConnectionOptions,
 });
 
-function attachEvents(name: string, connection: ConnectionOptions | RedisClient): QueueEvents {
-  const events = new QueueEvents(name, { connection: connection as ConnectionOptions });
-  events.on('completed', ({ jobId }) => logger.info({ queue: name, jobId }, 'job completed'));
-  events.on('failed', ({ jobId, failedReason }) =>
-    logger.error({ queue: name, jobId, failedReason }, 'job failed')
-  );
+function attachEvents(queue: Queue, connection: ConnectionOptions | RedisClient): QueueEvents {
+  const events = new QueueEvents(queue.name, {
+    connection: connection as ConnectionOptions,
+  });
+  events.on('completed', ({ jobId }) => logger.info({ queue: queue.name, jobId }, 'job completed'));
+  events.on('failed', async ({ jobId, failedReason }) => {
+    await logJobFailure(queue, jobId, failedReason);
+  });
   events.on('progress', ({ jobId, data }) =>
-    logger.debug({ queue: name, jobId, data }, 'job progress')
+    logger.debug({ queue: queue.name, jobId, data }, 'job progress')
   );
   return events;
 }
 
-export const stellarConfirmationEvents = attachEvents(
-  QUEUE_NAMES.stellarConfirmation,
-  bullConnection
-);
-export const webhookDispatchEvents = attachEvents(QUEUE_NAMES.webhookDispatch, bullConnection);
-export const emailEvents = attachEvents(QUEUE_NAMES.email, bullConnection);
-export const imageProcessingEvents = attachEvents(QUEUE_NAMES.imageProcessing, bullConnection);
-export const analyticsEvents = attachEvents(QUEUE_NAMES.analytics, bullConnection);
-export const exportsEvents = attachEvents(QUEUE_NAMES.exports, bullConnection);
+/** Logs a BullMQ job failure with full context for debugging and correlation. */
+async function logJobFailure(
+  queue: Queue,
+  jobId: string,
+  failedReason: string
+): Promise<void> {
+  let attemptsMade: number | undefined;
+  let maxAttempts: number | undefined;
+  let stacktrace: string[] | undefined;
+  try {
+    const job = await Job.fromId(queue, jobId);
+    if (job) {
+      attemptsMade = job.attemptsMade;
+      maxAttempts = job.opts.attempts;
+      stacktrace = job.stacktrace;
+    }
+  } catch {
+    // Best-effort: the job may already have been removed from Redis.
+  }
+  const exhausted =
+    attemptsMade != null && maxAttempts != null ? attemptsMade >= maxAttempts : undefined;
+  logger.error(
+    {
+      queue: queue.name,
+      jobId,
+      attemptsMade,
+      maxAttempts,
+      exhausted,
+      failedReason,
+      stack: stacktrace ? stacktrace.join('\n') : undefined,
+    },
+    'job failed'
+  );
+}
+
+export const stellarConfirmationEvents = attachEvents(stellarConfirmationQueue, bullConnection);
+export const webhookDispatchEvents = attachEvents(webhookDispatchQueue, bullConnection);
+export const emailEvents = attachEvents(emailQueue, bullConnection);
+export const imageProcessingEvents = attachEvents(imageProcessingQueue, bullConnection);
+export const analyticsEvents = attachEvents(analyticsQueue, bullConnection);
+export const exportsEvents = attachEvents(exportsQueue, bullConnection);
 export const emailNotificationEvents = attachEvents(
-  QUEUE_NAMES.emailNotifications,
+  emailNotificationQueue,
   emailNotificationEventsRedis
 );
 
@@ -194,6 +228,51 @@ export async function getQueueHealth() {
     });
   }
   return report;
+}
+
+/** Returns failed jobs across every first-class queue, newest first. */
+export async function getFailedJobs() {
+  const queues = [...allQueues, emailNotificationQueue];
+  const failedJobs: Array<{
+    id: string;
+    name: string;
+    queue: string;
+    attemptsMade: number | undefined;
+    maxAttempts: number | undefined;
+    failedReason: string | null;
+    stacktrace: string[] | undefined;
+    timestamp: number | null;
+    processedOn: number | null;
+    finishedOn: number | null;
+    data: unknown;
+  }> = [];
+
+  for (const q of queues) {
+    try {
+      const failed = await q.getFailed();
+      for (const job of failed) {
+        failedJobs.push({
+          id: job.id,
+          name: job.name,
+          queue: q.name,
+          attemptsMade: job.attemptsMade,
+          maxAttempts: job.opts.attempts,
+          failedReason: job.failedReason,
+          stacktrace: job.stacktrace,
+          timestamp: job.timestamp,
+          processedOn: job.processedOn,
+          finishedOn: job.finishedOn,
+          data: job.data,
+        });
+      }
+    } catch {
+      // Best-effort: a single queue must not break the whole listing.
+    }
+  }
+
+  return failedJobs.sort(
+    (a, b) => (b.timestamp ?? 0) - (a.timestamp ?? 0)
+  );
 }
 
 emailNotificationEvents.on('completed', ({ jobId }) => {

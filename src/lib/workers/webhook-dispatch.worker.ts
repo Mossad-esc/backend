@@ -144,7 +144,17 @@ export function createWebhookDispatchWorker() {
       const maxAttempts = Number(job.opts.attempts ?? 5);
       const exhausted = job.attemptsMade >= maxAttempts;
 
-      logger.error(`Webhook dispatch worker failed job ${job.id}:`, error);
+      logger.error(
+        {
+          queue: QUEUE_NAMES.webhookDispatch,
+          jobId: String(job.id),
+          attemptsMade: job.attemptsMade,
+          maxAttempts,
+          exhausted,
+          err: error,
+        },
+        'Webhook dispatch job failed'
+      );
 
       if (!exhausted) {
         return;

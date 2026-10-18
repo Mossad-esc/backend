@@ -1,5 +1,6 @@
 import { Queue, Worker } from 'bullmq';
 import { chargeDueSubscriptions } from '../../domains/subscriptions/subscription.charge';
+import { logger } from '../../utils/logger';
 import { withJobTracePayload, withWorkerContext, runWithJobContext } from '../requestContext';
 
 const QUEUE_NAME = 'subscription-billing';
@@ -34,10 +35,18 @@ export async function startSubscriptionWorker() {
   worker.on('failed', (job, err) => {
     if (job) {
       runWithJobContext(job, () => {
-        console.error('[subscription-worker] job failed', job?.id, err);
+        logger.error(
+          {
+            queue: 'subscription-billing',
+            jobId: String(job.id),
+            attemptsMade: job.attemptsMade,
+            err: err,
+          },
+          'subscription billing job failed'
+        );
       });
     } else {
-      console.error('[subscription-worker] job failed', err);
+      logger.error({ err }, 'subscription billing job failed');
     }
   });
 

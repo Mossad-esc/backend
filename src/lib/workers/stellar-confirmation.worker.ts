@@ -67,30 +67,44 @@ export function createStellarConfirmationWorker() {
 
   worker.on('failed', async (job, error) => {
     if (!job) {
-      logger.error('Stellar confirmation worker failed job:', error);
+      logger.error({ err: error }, 'Stellar confirmation job failed');
       return;
     }
     await runWithJobContext(job, async () => {
-      logger.error(`Stellar confirmation worker failed job ${job?.id}:`, error);
+      const maxAttempts = job.opts.attempts ?? 5;
+      const exhausted = job.attemptsMade >= maxAttempts;
+      logger.error(
+        {
+          queue: QUEUE_NAMES.stellarConfirmation,
+          jobId: String(job.id),
+          attemptsMade: job.attemptsMade,
+          maxAttempts,
+          exhausted,
+          err: error,
+        },
+        'Stellar confirmation job failed'
+      );
 
-      if (job.attemptsMade >= (job.opts.attempts ?? 5)) {
-        const tipId = job.data.tipId || job.data.transactionId;
-
-        try {
-          await paymentService.updateTipStatus(tipId, {
-            status: TipStatus.FAILED,
-          });
-        } catch (updateError) {
-          logger.error(`Failed to mark tip ${tipId} as FAILED:`, updateError);
-        }
-
-        await moveToDeadLetter(
-          QUEUE_NAMES.stellarConfirmation,
-          String(job.id),
-          job.data,
-          error.message
-        );
+      if (!exhausted) {
+        return;
       }
+
+      const tipId = job.data.tipId || job.data.transactionId;
+
+      try {
+        await paymentService.updateTipStatus(tipId, {
+          status: TipStatus.FAILED,
+        });
+      } catch (updateError) {
+        logger.error(`Failed to mark tip ${tipId} as FAILED:`, updateError);
+      }
+
+      await moveToDeadLetter(
+        QUEUE_NAMES.stellarConfirmation,
+        String(job.id),
+        job.data,
+        error.message
+      );
     });
   });
 

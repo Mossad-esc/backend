@@ -24,10 +24,25 @@ export function createEmailWorker() {
   worker.on('failed', async (job, err) => {
     if (job) {
       await runWithJobContext(job, async () => {
-        if (job.attemptsMade >= (job.opts.attempts ?? 5)) {
+        const maxAttempts = job.opts.attempts ?? 5;
+        const exhausted = job.attemptsMade >= maxAttempts;
+        logger.error(
+          {
+            queue: QUEUE_NAMES.email,
+            jobId: String(job.id),
+            attemptsMade: job.attemptsMade,
+            maxAttempts,
+            exhausted,
+            err: err,
+          },
+          'email job failed'
+        );
+        if (exhausted) {
           await moveToDeadLetter(QUEUE_NAMES.email, String(job.id), job.data, err.message);
         }
       });
+    } else {
+      logger.error({ err }, 'email job failed');
     }
   });
 

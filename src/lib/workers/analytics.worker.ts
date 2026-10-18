@@ -24,10 +24,25 @@ export function createAnalyticsWorker() {
   worker.on('failed', async (job, err) => {
     if (job) {
       await runWithJobContext(job, async () => {
-        if (job.attemptsMade >= (job.opts.attempts ?? 5)) {
+        const maxAttempts = job.opts.attempts ?? 5;
+        const exhausted = job.attemptsMade >= maxAttempts;
+        logger.error(
+          {
+            queue: QUEUE_NAMES.analytics,
+            jobId: String(job.id),
+            attemptsMade: job.attemptsMade,
+            maxAttempts,
+            exhausted,
+            err: err,
+          },
+          'analytics job failed'
+        );
+        if (exhausted) {
           await moveToDeadLetter(QUEUE_NAMES.analytics, String(job.id), job.data, err.message);
         }
       });
+    } else {
+      logger.error({ err }, 'analytics job failed');
     }
   });
 
